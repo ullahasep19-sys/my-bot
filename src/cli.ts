@@ -399,6 +399,27 @@ async function runCLI() {
               const pos = engine.state.openPositions[pair];
               const ticker = await IndodaxPublicAPI.getTicker(pair);
               const currentPrice = Number(ticker.ticker.last);
+
+              // ===== DETEKSI JUAL MANUAL =====
+              // Jika koin tidak ada di wallet tapi masih tercatat di openPositions
+              const coin = pair.split('_')[0];
+              const walletAmount = parseFloat(balances[coin] || '0') + parseFloat(holds[coin] || '0');
+              const expectedMinAmount = pos.amountCrypto * 0.05; // toleransi 5% (dust)
+              if (walletAmount < expectedMinAmount && pos.amountCrypto > 0) {
+                console.log(`\n📤 [MANUAL SELL DETECTED] ${pair.toUpperCase()} tidak ada di wallet (${walletAmount}). Kemungkinan dijual manual.`);
+                const pnlPercent = pos.entryPrice > 0 ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
+                const realizedPnlIdr = (pnlPercent / 100) * pos.amountIdr;
+                const newStatus = pnlPercent > 0 ? 'PROFIT' : 'LOSS';
+                await (prisma as any).analysis.updateMany({
+                  where: { assetName: pair, status: 'TRADING' },
+                  data: { status: newStatus, exitPrice: currentPrice, pnlPercent: parseFloat(pnlPercent.toFixed(2)), realizedPnlIdr: Math.round(realizedPnlIdr) }
+                });
+                engine.state.totalExposureIdr -= pos.amountIdr;
+                delete engine.state.openPositions[pair];
+                await DBBridge.logActivity('TRADE', `📤 MANUAL SELL: ${pair.toUpperCase()} @ Rp ${currentPrice.toLocaleString()} | ${newStatus} ${pnlPercent.toFixed(2)}%`);
+                console.log(`✅ [MANUAL SELL] Posisi ${pair.toUpperCase()} ditutup. PnL: ${pnlPercent.toFixed(2)}%`);
+                continue;
+              }
               
               // 1. Trailing Stop via ExitManager2
               const tpsHit = pos.tpHits || [];
