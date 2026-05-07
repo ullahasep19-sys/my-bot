@@ -126,7 +126,11 @@ export class RiskManager {
    * Mencegah bot membeli terlalu banyak koin dari sektor yang sama secara bersamaan.
    */
   public validateCorrelation(pair: string, openPairs: string[]): boolean {
-    const memeCoins = ['pepe_idr', 'doge_idr', 'shib_idr', 'floki_idr', 'bonk_idr', 'wif_idr'];
+    const memeCoins = [
+      'pepe_idr', 'doge_idr', 'shib_idr', 'floki_idr', 'bonk_idr', 'wif_idr',
+      'fartcoin_idr', 'pippin_idr', 'zerebro_idr', 'moodeng_idr', 'pengu_idr',
+      'brett_idr', 'popcat_idr', 'neiro_idr', 'turbo_idr', 'dogs_idr', 'jellyjelly_idr'
+    ];
     const aiCoins = ['fet_idr', 'rndr_idr', 'agix_idr', 'ocean_idr', 'tao_idr', 'near_idr'];
     const l1Coins = ['btc_idr', 'eth_idr', 'sol_idr', 'bnb_idr', 'ada_idr', 'avax_idr'];
 

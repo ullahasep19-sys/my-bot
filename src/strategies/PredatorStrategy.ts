@@ -78,11 +78,11 @@ export class PredatorStrategy {
 
     // Threshold disesuaikan per regime
     const isMemeManiaPhase = narrativeScore >= 70;
-    const marketBuyThreshold = regime === MarketRegime.PREDATOR ? 75 : 65;
-    const limitEntryThreshold = isMemeManiaPhase ? 42 :
+    const marketBuyThreshold = regime === MarketRegime.PREDATOR ? 75 : 68;
+    const limitEntryThreshold = isMemeManiaPhase ? 50 :   // naik dari 42
                                 regime === MarketRegime.PREDATOR ? 68 :
-                                regime === MarketRegime.WAR ? 50 : 55;
-    const scoutEntryThreshold = 38; // SCOUT: accumulation early entry
+                                regime === MarketRegime.WAR ? 55 : 60; // naik dari 50/55
+    const scoutEntryThreshold = 45; // naik dari 38
 
     if (finalScore >= marketBuyThreshold) {
       return {

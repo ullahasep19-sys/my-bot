@@ -619,6 +619,28 @@ async function runCLI() {
           });
           dailyTradeCount++;
 
+          // Simpan trade journal ke DB
+          try {
+            const firstUser = await (prisma as any).user.findFirst();
+            if (firstUser) {
+              await (prisma as any).analysis.create({
+                data: {
+                  userId: firstUser.id,
+                  assetName: ai.pair,
+                  entryPrice: safeEntry,
+                  targetPrice1: exits.tp1,
+                  targetPrice2: exits.tp2,
+                  stopLoss: safeSl,
+                  status: 'TRADING',
+                  sentiment: ai.regime || 'Neutral',
+                  analysisText: `[AUTO] Score: ${ai.score} | Why: ${ai.why_now || '-'} | Regime: ${ai.regime} | Size: Rp ${sizeIdr.toLocaleString()}`,
+                }
+              });
+            }
+          } catch (dbErr: any) {
+            console.warn(`⚠️ Gagal simpan trade journal: ${dbErr.message}`);
+          }
+
           // 1 posisi saja per siklus — break setelah 1 eksekusi sukses
           break;
         }
