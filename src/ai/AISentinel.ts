@@ -59,17 +59,19 @@ export class AISentinel {
     this.sumopodKey = process.env.SUMOPOD_API_KEY || "";
     this.sumopodBaseUrl = process.env.SUMOPOD_BASE_URL || "https://ai.sumopod.com/v1";
     
-    const freeModelsEnv = process.env.SUMOPOD_FREE_MODELS || "qwen/qwen3-30b-a3b-instruct-2507,zai/glm-4.7-fp8,nvidia/nemotron-3-nano-30b";
+    // TIER 1 — Scanner/Enrichment (ultra murah)
+    const freeModelsEnv = process.env.SUMOPOD_FREE_MODELS || "qwen/qwen3-30b-a3b-instruct-2507,openai/gpt-oss-20b,MiniMax-M2.7-highspeed";
     this.freeModels = freeModelsEnv.split(',').map(m => m.trim());
     
-    const fallbackEnv = process.env.SUMOPOD_FALLBACK_MODELS || "gemini/gemini-2.0-flash,deepseek-v4-flash,gpt-4.1-nano";
+    // TIER 2 — Consensus/Eksekusi (pintar, akurat) — ini yang dipakai untuk trading decision
+    const fallbackEnv = process.env.SUMOPOD_FALLBACK_MODELS || "gemini/gemini-2.0-flash-lite,gpt-5-nano,deepseek-v4-flash";
     this.fallbackModels = fallbackEnv.split(',').map(m => m.trim());
 
     if (this.sumopodKey) {
       this.isEnabled = true;
       console.log(`🚀 [ALPHA OMEGA] Sumopod Engine Aktif`);
-      console.log(`   - Free Models: ${this.freeModels.length} Loaded`);
-      console.log(`   - Fallback Models: ${this.fallbackModels.length} Loaded`);
+      console.log(`   - Tier 1 (Scanner): ${this.freeModels[0]}`);
+      console.log(`   - Tier 2 (Consensus): ${this.fallbackModels[0]}`);
     } else {
       console.error("❌ [CRITICAL] SUMOPOD_API_KEY tidak ditemukan!");
     }

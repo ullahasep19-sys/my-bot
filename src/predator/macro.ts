@@ -18,8 +18,16 @@ export interface MacroMetrics {
 
 export class MacroRegimeEngine {
   private static FNG_API = 'https://api.alternative.me/fng/';
+  private static cachedResult: { regime: MarketRegime; metrics: MacroMetrics } | null = null;
+  private static cacheExpiry: number = 0;
+  private static readonly CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 jam (bukan 24 jam agar tetap responsif)
 
   public static async getCurrentRegime(): Promise<{ regime: MarketRegime; metrics: MacroMetrics }> {
+    // Return cache jika masih valid
+    if (this.cachedResult && Date.now() < this.cacheExpiry) {
+      return this.cachedResult;
+    }
+
     try {
       const metrics = await this.fetchMetrics();
       let regime = MarketRegime.WAR;
@@ -38,7 +46,10 @@ export class MacroRegimeEngine {
       if (metrics.fearAndGreed < 25) regime = MarketRegime.DEFENSE; // Extreme Fear
       if (metrics.fearAndGreed > 75) regime = MarketRegime.PREDATOR; // Extreme Greed / Mooning
 
-      return { regime, metrics };
+      const result = { regime, metrics };
+      this.cachedResult = result;
+      this.cacheExpiry = Date.now() + this.CACHE_TTL_MS;
+      return result;
     } catch (error) {
       console.error('Error in MacroRegimeEngine:', error);
       // Fallback to WAR
