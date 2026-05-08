@@ -78,6 +78,7 @@ model Analysis {
   @@index([userId])
   @@index([status])
   @@index([createdAt])
+  @@index([assetName])
 }
 
 enum Status {

@@ -96,7 +96,7 @@ async function runCLI() {
     maxPortfolioExposurePercent: 75,
     maxOpenPositions: 7
   });
-  
+
   // Inject parameter tambahan ke state/risk engine jika diperlukan
   engine.state.maxTradesPerDay = maxTrades;
   engine.state.activeMode = mode;
@@ -168,12 +168,12 @@ async function runCLI() {
 
     // State tracking untuk anti-overtrade
     let dailyTradeCount = 0;
-    const lastTradeReset = new Date().toDateString();
+    let lastTradeReset = new Date().toDateString();
 
     console.log('\n🔍 [ALPHA HUNTER] Scan pasar awal...');
-    const MEME_PAIRS = new Set(['pepe_idr','doge_idr','shib_idr','fartcoin_idr','pippin_idr',
-      'zerebro_idr','moodeng_idr','pengu_idr','wif_idr','bonk_idr','floki_idr','brett_idr',
-      'jellyjelly_idr','dogs_idr','neiro_idr','turbo_idr','popcat_idr']);
+    const MEME_PAIRS = new Set(['pepe_idr', 'doge_idr', 'shib_idr', 'fartcoin_idr', 'pippin_idr',
+      'zerebro_idr', 'moodeng_idr', 'pengu_idr', 'wif_idr', 'bonk_idr', 'floki_idr', 'brett_idr',
+      'jellyjelly_idr', 'dogs_idr', 'neiro_idr', 'turbo_idr', 'popcat_idr']);
 
     const balancePairs = (pairs: string[], maxMeme = 3): string[] => {
       const meme = pairs.filter(p => MEME_PAIRS.has(p)).slice(0, maxMeme);
@@ -204,9 +204,9 @@ async function runCLI() {
         for (const r of huntResults) sentinel.alphaScores[r.pair] = r.totalScore;
       }
     }, 30 * 60 * 1000);
-    
+
     // Initializing radar and bridge for dashboard sync
-    const radar = new LiveRadar(30000); 
+    const radar = new LiveRadar(30000);
     const bridge = new DBBridge(radar, engine);
     bridge.startSync();
     radar.start();
@@ -215,8 +215,8 @@ async function runCLI() {
     console.log(`\n💾 [CLOUD-SYNC] Menghubungkan ke Supabase & Membersihkan koin rusak...`);
     try {
       // 1. Force Cleanup koin macet agar tidak loop lagi
-      await (prisma as any).analysis.deleteMany({ 
-        where: { assetName: { in: ['molt_idr', 'beat_idr'] }, status: 'TRADING' } 
+      await (prisma as any).analysis.deleteMany({
+        where: { assetName: { in: ['molt_idr', 'beat_idr'] }, status: 'TRADING' }
       });
 
       // 2. Recover Open Positions
@@ -224,13 +224,13 @@ async function runCLI() {
       for (const pos of dbPositions) {
         if (!engine.state.openPositions[pos.assetName]) {
           console.log(`   ✅ Recovered ${pos.assetName.toUpperCase()}: SL ${pos.stopLoss}, TP1 ${pos.targetPrice1}`);
-          
+
           // Sync real balance from Indodax
           const currentInfo = await engine.client.getInfo();
           const coin = pos.assetName.split('_')[0];
           const balances = currentInfo.balance || {};
           const amountCrypto = parseFloat(balances[coin] || "0");
-          
+
           if (amountCrypto > 0) {
             engine.state.openPositions[pos.assetName] = {
               amountIdr: amountCrypto * pos.entryPrice,
@@ -252,13 +252,13 @@ async function runCLI() {
       }
 
       // 3. Recover PnL Stats from History
-      const history = await (prisma as any).analysis.findMany({ 
-        where: { status: { in: ['PROFIT', 'LOSS'] } } 
+      const history = await (prisma as any).analysis.findMany({
+        where: { status: { in: ['PROFIT', 'LOSS'] } }
       });
       engine.state.totalTrades = history.length;
       engine.state.winningTrades = history.filter((h: any) => h.status === 'PROFIT').length;
       engine.state.totalPnL = history.reduce((sum: number, h: any) => sum + (h.realizedPnlIdr || 0), 0);
-      
+
       console.log(`   📊 Stats Sync: ${engine.state.totalTrades} trades, PnL: Rp ${Math.round(engine.state.totalPnL).toLocaleString()}`);
 
     } catch (e: any) {
@@ -280,7 +280,7 @@ async function runCLI() {
         const currentMode = settings ? settings.strategyMode : mode;
         const currentRisk = settings ? settings.riskPerTrade : riskPercent;
         const currentMaxTrades = settings ? settings.maxOpenPositions : maxTrades;
-        
+
         if (!isBotEnabled) {
           console.log(`\n💤 [AUTOPILOT] Bot is STANDBY (Disabled via Dashboard). Waiting...`);
           await DBBridge.logActivity('SYSTEM', 'Bot is STANDBY (Disabled via Dashboard)');
@@ -291,17 +291,20 @@ async function runCLI() {
         const narrativeReport = await NarrativeEngine.generateReport();
 
         await LoggerDomain.log(LogLevel.SYSTEM, `Cycle Started | Regime: ${regime} | Phase: ${narrativeReport.marketPhase}`);
-        
+
         console.log(`\n🔄 [AUTOPILOT] Siklus dimulai | Mode: ${currentMode.toUpperCase()} | Regime: ${regime}`);
         console.log(`🧠 [NARRATIVE] Phase: ${narrativeReport.marketPhase} | Hot: ${narrativeReport.hotNow.slice(0, 2).map(n => n.type).join(', ')}`);
-        
+
         // --- PHASE D: PERFORMANCE TRACKING ---
         const totalCapital = await engine.calculateTotalEquity();
         await PerformanceTracker.recordDaily(totalCapital, engine.state.totalPnL, (engine.state.totalPnL / totalCapital) * 100);
 
-        // Reset daily trade count jika hari baru
+        // Reset daily trade count & circuit breaker jika hari baru
         if (new Date().toDateString() !== lastTradeReset) {
           dailyTradeCount = 0;
+          lastTradeReset = new Date().toDateString();
+          RiskDomain.resetCircuit();
+          console.log(`🌅 [SYSTEM] Hari baru terdeteksi. Reset counter dan circuit breaker.`);
         }
 
         // Anti-overtrade check
@@ -312,7 +315,7 @@ async function runCLI() {
 
         const info = await engine.client.getInfo();
         const summaries = await IndodaxPublicAPI.getAllTickers();
-        
+
         const balances = info.balance || {};
         const holds = info.balance_hold || {};
 
@@ -333,7 +336,7 @@ async function runCLI() {
         }
 
         compounding.autoAdjustRatios(totalCapital);
-        
+
         // --- PHASE B: RISK DOMAIN MONITORING ---
         const startingEquity = settings?.startingEquity || totalCapital; // We should track this in DB
         if (RiskDomain.monitor(totalCapital, startingEquity)) {
@@ -346,7 +349,7 @@ async function runCLI() {
         // --- MANAGE OPEN POSITIONS (Trailing Stop & Exit) ---
         const openAnalyses = await (prisma as any).analysis.findMany({ where: { status: 'TRADING' } });
         const managedPairs = openAnalyses.map((a: any) => a.assetName);
-        
+
         // 1. ADOPT UNTRACKED COINS (Manual Purchases)
         console.log(`\n🔍 [ADOPTION] Memeriksa koin manual di portofolio...`);
         const firstUser = await (prisma as any).user.findFirst();
@@ -356,19 +359,19 @@ async function runCLI() {
           if (coin === 'idr') continue;
           const pair = `${coin}_idr`;
           const totalCoin = parseFloat(balances[coin]) + parseFloat(holds[coin] || "0");
-          
+
           if (totalCoin > 0 && !managedPairs.includes(pair)) {
             const price = parseFloat(summaries[pair]?.last || "0");
             if (totalCoin * price > 20000) { // Hanya adopsi jika nilai > 20rb
               console.log(`\n📦 [ADOPTION] Mengadopsi ${pair.toUpperCase()} (Manual Purchase detected)`);
               try {
                 // Minta AI buatkan strategi Exit darurat
-                const ai = await sentinel.analyzePair(pair); 
-                
+                const ai = await sentinel.analyzePair(pair);
+
                 if (!ai) {
                   console.log(`   ⚠️ AI gagal menganalisa ${pair}, menggunakan setting standar (SL 5%, TP 10%)`);
                 }
-                
+
                 // 2. Add to Engine State Memory (so it's managed immediately)
                 const posAmountIdr = totalCoin * price;
                 engine.state.openPositions[pair] = {
@@ -383,7 +386,7 @@ async function runCLI() {
 
                 await (prisma as any).analysis.create({
                   data: {
-                    userId: validUserId, 
+                    userId: validUserId,
                     assetName: pair,
                     entryPrice: price,
                     targetPrice1: ai?.precise_tp || price * 1.05,
@@ -393,7 +396,7 @@ async function runCLI() {
                     analysisText: `ADOPTED: ${ai?.why_now || 'Manual trade management taken over by AI'}`
                   }
                 });
-                
+
                 await DBBridge.logActivity('SYSTEM', `📦 ADOPTED: ${pair.toUpperCase()} has been integrated into AI management.`);
               } catch (adoptErr) {
                 console.error(`❌ Gagal mengadopsi ${pair}:`, adoptErr);
@@ -431,10 +434,20 @@ async function runCLI() {
                 console.log(`✅ [MANUAL SELL] Posisi ${pair.toUpperCase()} ditutup. PnL: ${pnlPercent.toFixed(2)}%`);
                 continue;
               }
-              
+
               // 1. Trailing Stop via ExitManager2
               const tpsHit = pos.tpHits || [];
-              const exitUpdate = ExitManager2.monitor(currentPrice, pos.entryPrice, pos.sl || pos.entryPrice * 0.96, tpsHit, pos.entryTimestamp);
+              const exitUpdate = ExitManager2.monitor(
+                currentPrice,
+                pos.entryPrice,
+                pos.sl || pos.entryPrice * 0.96,
+                tpsHit,
+                pos.entryTimestamp,
+                pos.lastPrice
+              );
+
+              // Update lastPrice untuk deteksi crash di cycle berikutnya
+              engine.state.openPositions[pair].lastPrice = currentPrice;
 
               if (exitUpdate.newSL && exitUpdate.newSL > (pos.sl || 0)) {
                 engine.state.openPositions[pair].sl = exitUpdate.newSL;
@@ -473,7 +486,7 @@ async function runCLI() {
             } catch (e: any) {
               const msg = e.message || '';
               console.error(`❌ [MICRO-CYCLE] Gagal menjual ${pair}: ${msg}`);
-              
+
               // LOOP PROTECTOR AGRESSIVE: Bersihkan koin jika ada error API Indodax yang permanen
               if (msg.includes('Minimum price') || msg.includes('Insufficient balance') || msg.includes('API Error')) {
                 console.log(`   🛡️ [AUTO-CLEANUP] Menghapus ${pair} secara paksa karena error API permanen.`);
@@ -509,10 +522,10 @@ async function runCLI() {
                 const pos = engine.state.openPositions[ai.pair];
                 const ticker = await IndodaxPublicAPI.getTicker(ai.pair);
                 const currentPrice = parseFloat(ticker.ticker.last);
-                
+
                 await engine.executeSell(ai.pair, amount);
                 await DBBridge.logActivity('TRADE', `🔴 EXECUTING SELL: ${ai.pair.toUpperCase()} (AI Signal)`);
-                
+
                 if (pos) {
                   const pnlPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
                   const realizedPnlIdr = (pnlPercent / 100) * pos.amountIdr;
@@ -541,8 +554,8 @@ async function runCLI() {
             await DBBridge.logActivity('SCAN', `${ai.pair.toUpperCase()}: Rejected (Bukan sinyal BUY)`);
             continue;
           }
-          if (ai.score < 42) {
-            console.log(`│  STATUS : REJECTED — Score ${ai.score} < 42${' '.repeat(20)}│`);
+          if (ai.score < 30) {
+            console.log(`│  STATUS : REJECTED — Score ${ai.score} < 30${' '.repeat(20)}│`);
             console.log(`└${sep}┘`);
             await DBBridge.logActivity('SCAN', `${ai.pair.toUpperCase()}: Rejected (Score ${ai.score} < 42)`);
             continue;
@@ -587,11 +600,11 @@ async function runCLI() {
           }
 
           // Sizing via Compounding Engine
-          const MIDCAP = ['btc_idr','eth_idr','sol_idr','bnb_idr','xrp_idr','ada_idr','avax_idr','op_idr','sui_idr','hype_idr'];
+          const MIDCAP = ['btc_idr', 'eth_idr', 'sol_idr', 'bnb_idr', 'xrp_idr', 'ada_idr', 'avax_idr', 'op_idr', 'sui_idr', 'hype_idr'];
           const isLowCapCli = !MIDCAP.includes(ai.pair);
           const huntCoin = huntResults.find(r => r.pair === ai.pair);
           const ctoScore = huntCoin ? huntCoin.totalScore : ai.score;
-          
+
           const slDistPercent = Math.abs((safeEntry - safeSl) / safeEntry) * 100;
           const sizeIdr = compounding.getOptimalPositionSize(totalCapital, isLowCapCli, ctoScore, currentRisk, slDistPercent, engine.state.recentResults);
           if (sizeIdr < 10000) {
@@ -602,8 +615,8 @@ async function runCLI() {
 
           // Reality Engine (Spread Check)
           const ticker = await IndodaxPublicAPI.getTicker(ai.pair);
-          const ask = Number(ticker.ticker.buy);
-          const bid = Number(ticker.ticker.sell);
+          const ask = Number(ticker.ticker.sell); // Ask is the lowest selling price
+          const bid = Number(ticker.ticker.buy);  // Bid is the highest buying price
           if (!engine.riskManager.validateExecution(ask, bid)) {
             console.log(`│  STATUS : REJECTED — Spread terlalu tinggi          │`);
             console.log(`└${sep}┘`);
@@ -623,10 +636,10 @@ async function runCLI() {
           await DBBridge.logActivity('TRADE', `✅ EXECUTING BUY: ${ai.pair.toUpperCase()} @ Rp ${safeEntry.toLocaleString()}`);
 
           // EXECUTE ORDER
-          await engine.executeBuy(ai.pair, sizeIdr, safeEntry, { 
-            sl: safeSl, 
-            tp1: exits.tp1, 
-            tp2: exits.tp2 
+          await engine.executeBuy(ai.pair, sizeIdr, safeEntry, {
+            sl: safeSl,
+            tp1: exits.tp1,
+            tp2: exits.tp2
           });
           dailyTradeCount++;
 
@@ -675,13 +688,23 @@ async function runCLI() {
         for (const pair of openPairs) {
           const pos = openPositions[pair];
           if (!pos) continue;
-          
+
           const ticker = summaries[pair];
           if (!ticker) continue;
           const currentPrice = Number(ticker.last);
 
           // PREDATOR EXIT MANAGER 2.0
-          const update = ExitManager2.monitor(currentPrice, pos.entryPrice, pos.sl || pos.entryPrice * 0.95, pos.tpHits || []);
+          const update = ExitManager2.monitor(
+            currentPrice,
+            pos.entryPrice,
+            pos.sl || pos.entryPrice * 0.95,
+            pos.tpHits || [],
+            pos.entryTimestamp,
+            pos.lastPrice
+          );
+
+          // Update lastPrice untuk cycle berikutnya
+          engine.state.openPositions[pair].lastPrice = currentPrice;
 
           if (update.shouldClose) {
             const coin = pair.split('_')[0];
@@ -694,7 +717,7 @@ async function runCLI() {
             console.log(`\n🚨 [PREDATOR EXIT] ${pair.toUpperCase()} Reason: ${update.closeReason} @ Rp ${currentPrice.toLocaleString()}`);
             await engine.executeSell(pair, realAmount);
             await DBBridge.logActivity('TRADE', `🔴 PREDATOR EXIT: ${pair.toUpperCase()} @ Rp ${currentPrice.toLocaleString()} (${update.closeReason})`);
-            
+
             const grossPnlPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
             const realizedPnlIdr = (grossPnlPercent / 100) * pos.amountIdr;
             await (prisma as any).analysis.updateMany({
@@ -712,7 +735,7 @@ async function runCLI() {
           if (update.tpHit) {
             const coin = pair.split('_')[0];
             const realAmount = parseFloat(balances[coin] || "0");
-            
+
             if (update.tpHit === 1 && !(pos.tpHits || []).includes(1)) {
               console.log(`💵 [PREDATOR TP1] ${pair.toUpperCase()} Hit! Selling 50%...`);
               await engine.executeSell(pair, realAmount * 0.5);
@@ -740,12 +763,32 @@ async function runCLI() {
     // Jalankan siklus pertama
     runAutopilotCycle();
 
-    // Jalankan AI Cycle setiap 30 menit
-    setInterval(runAutopilotCycle, 1800000);
-    
+    // Jalankan AI Cycle setiap 3 menit (was 30m)
+    const autopilotInterval = setInterval(async () => {
+      await runAutopilotCycle();
+      console.log(`\n⏳ [AUTOPILOT] Siklus selesai. Menunggu 3 menit untuk analisis berikutnya...`);
+    }, 180000);
+
     // Jalankan Micro-Cycle setiap 30 detik (Flash Crash Guardian)
-    setInterval(runMicroCycle, 30000);
+    const microCycleInterval = setInterval(runMicroCycle, 30000);
     console.log(`⚡ [MICRO-CYCLE] Flash Crash Guardian aktif — memantau SL/TP setiap 30 detik.`);
+
+    const cleanup = async () => {
+      console.log('\n🛑 [SYSTEM] Graceful shutdown initiated...');
+      clearInterval(autopilotInterval);
+      clearInterval(microCycleInterval);
+      radar.stop();
+      (engine as any).saveState();
+
+      const { prisma } = require('./db/prisma');
+      await prisma.$disconnect();
+
+      console.log('✅ [SYSTEM] All connections closed. Goodbye!');
+      process.exit(0);
+    };
+
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
 
     return;
   }
@@ -781,35 +824,35 @@ async function runCLI() {
     try {
       const info = await engine.client.getInfo();
       console.log('✅ Connection Successful!');
-      
+
       let totalIdr = parseInt(info.balance.idr || '0');
       let holdIdr = parseInt(info.balance_hold?.idr || '0');
       let totalAssetValueIdr = totalIdr + holdIdr;
-      
+
       console.log('💰 Saldo Rupiah Tunai (IDR): Rp', totalIdr.toLocaleString('id-ID'));
       if (holdIdr > 0) {
         console.log('⏳ Saldo Rupiah Tertahan (Open Order): Rp', holdIdr.toLocaleString('id-ID'));
       }
-      
+
       console.log('\n📊 Rincian Aset Koin Anda:');
-      
+
       const allCoins = new Set([...Object.keys(info.balance), ...Object.keys(info.balance_hold || {})]);
-      
+
       for (const coin of allCoins) {
         if (coin === 'idr') continue;
-        
+
         const available = parseFloat((info.balance[coin] as string) || '0');
         const hold = parseFloat((info.balance_hold?.[coin] as string) || '0');
         const totalCoin = available + hold;
-        
+
         if (totalCoin > 0) {
           try {
             const ticker = await IndodaxPublicAPI.getTicker(`${coin}_idr`);
             const currentPrice = parseInt(ticker.ticker.last);
             const estimatedValue = currentPrice * totalCoin;
-            
+
             totalAssetValueIdr += estimatedValue;
-            
+
             let holdText = hold > 0 ? ` (+${hold} sedang di antrean)` : '';
             console.log(`- ${coin.toUpperCase()}: ${available} koin${holdText} | Harga: Rp ${currentPrice.toLocaleString('id-ID')} -> Nilai: Rp ${Math.round(estimatedValue).toLocaleString('id-ID')}`);
           } catch (e) {
@@ -820,7 +863,7 @@ async function runCLI() {
       }
 
       console.log(`\n💎 ESTIMASI TOTAL ASET (Semua Koin + IDR): Rp ${Math.round(totalAssetValueIdr).toLocaleString('id-ID')}`);
-      
+
     } catch (e: any) {
       console.log('❌ Connection Failed:', e.message);
     }

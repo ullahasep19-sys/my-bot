@@ -1,16 +1,20 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
-import { IndodaxClient } from '@/lib/indodax';
+import { prisma } from '@/src/db/prisma';
+import { IndodaxClient } from '@/src/core/IndodaxClient';
+import { IndodaxPublicAPI } from '@/src/core/IndodaxPublicAPI';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const client = new IndodaxClient();
+    const client = new IndodaxClient({
+        apiKey: process.env.INDODAX_API_KEY || '',
+        secretKey: process.env.INDODAX_SECRET_KEY || ''
+    });
 
     const [info, summaries, openPositions, closedTrades, botSettings] = await Promise.all([
       client.getInfo().catch(() => null),
-      IndodaxClient.getAllTickers().catch(() => ({ tickers: {} })),
+      IndodaxPublicAPI.getAllTickers().catch(() => ({})),
       (prisma as any).analysis.findMany({ where: { status: 'TRADING' }, orderBy: { createdAt: 'desc' } }),
       (prisma as any).analysis.findMany({ where: { status: { in: ['PROFIT', 'LOSS'] } }, orderBy: { updatedAt: 'desc' }, take: 20 }),
       (prisma as any).botSettings.findUnique({ where: { id: 'global' } }),
@@ -21,13 +25,13 @@ export async function GET() {
     let totalEquity = 0;
     const walletAssets: any[] = [];
 
-    if (info?.success) {
-      const balances = info.return.balance;
-      const holds = info.return.balance_hold;
+    if (info) {
+      const balances = info.balance || {};
+      const holds = info.balance_hold || {};
       idrBalance = parseFloat(balances.idr || '0') + parseFloat(holds.idr || '0');
       totalEquity = idrBalance;
 
-      const tickers = summaries.tickers || {};
+      const tickers: any = summaries || {};
       for (const coin of Object.keys(balances)) {
         if (coin === 'idr') continue;
         const total = parseFloat(balances[coin] || '0') + parseFloat(holds[coin] || '0');
@@ -43,9 +47,10 @@ export async function GET() {
     }
 
     // Floating PnL per open position
-    const tickers = summaries.tickers || {};
+    const tickers: any = summaries || {};
     const positionsWithPnl = openPositions.map((pos: any) => {
-      const currentPrice = parseFloat(tickers[pos.assetName]?.last || pos.currentPrice || pos.entryPrice);
+      const ticker = tickers[pos.assetName];
+      const currentPrice = parseFloat(ticker?.last || pos.currentPrice || pos.entryPrice);
       const pnlPct = pos.entryPrice > 0 ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
       return { ...pos, currentPrice, floatingPnlPct: pnlPct };
     });

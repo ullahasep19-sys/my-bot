@@ -22,7 +22,7 @@ export class SMCEngine {
         fvg: false,
         premiumDiscount: 'EQUILIBRIUM',
         smcScore: 0,
-        summary: 'No 4H Data'
+        summary: '4H Data Synthesized/Unavailable'
       };
     }
     

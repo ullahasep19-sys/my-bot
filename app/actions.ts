@@ -1,33 +1,36 @@
 "use server";
 
-import { IndodaxClient } from "@/lib/indodax";
-import { prisma } from "@/lib/prisma";
+import { IndodaxClient } from "@/src/core/IndodaxClient";
+import { IndodaxPublicAPI } from "@/src/core/IndodaxPublicAPI";
+import { prisma } from "@/src/db/prisma";
 import { revalidatePath } from "next/cache";
+
+const clientConfig = {
+  apiKey: process.env.INDODAX_API_KEY || '',
+  secretKey: process.env.INDODAX_SECRET_KEY || ''
+};
+
+const getClient = () => new IndodaxClient(clientConfig);
 
 export async function executeSniperAction(analysisId: string) {
   try {
     const analysis = await (prisma as any).analysis.findUnique({ where: { id: analysisId } });
     if (!analysis) return { success: false, message: "Analysis not found" };
 
-    const client = new IndodaxClient();
+    const client = getClient();
     
     // Default: use 2% of equity or fixed amount for MVP
-    // Here we use a safe default for the user: Rp 100,000 if balance allows
     const amount = 100000; 
 
     const result = await client.trade(analysis.assetName, 'buy', analysis.entryPrice, amount);
     
-    if (result.success === 1) {
-      // Update DB status to TRADING
-      await (prisma as any).analysis.update({
-        where: { id: analysisId },
-        data: { status: 'TRADING' }
-      });
-      revalidatePath('/');
-      return { success: true, message: "Sniper Entry Executed!" };
-    } else {
-      return { success: false, message: result.error || "Execution failed" };
-    }
+    // In src/core/IndodaxClient, if it doesn't throw, it was successful (success: 1)
+    await (prisma as any).analysis.update({
+      where: { id: analysisId },
+      data: { status: 'TRADING' }
+    });
+    revalidatePath('/');
+    return { success: true, message: "Sniper Entry Executed!" };
   } catch (e: any) {
     return { success: false, message: e.message };
   }
@@ -38,51 +41,52 @@ export async function panicSellAction(analysisId: string) {
     const analysis = await (prisma as any).analysis.findUnique({ where: { id: analysisId } });
     if (!analysis) return { success: false, message: "Analysis not found" };
 
-    const client = new IndodaxClient();
+    const client = getClient();
     const info = await client.getInfo();
     const coin = analysis.assetName.split('_')[0];
-    const amount = parseFloat(info.return.balance[coin] || "0");
+    const balance = info.balance || {};
+    const amount = parseFloat(balance[coin] || "0");
 
     if (amount <= 0) return { success: false, message: "No balance to sell" };
 
-    const ticker = await IndodaxClient.getTicker(analysis.assetName);
+    const ticker = await IndodaxPublicAPI.getTicker(analysis.assetName);
     const price = parseFloat(ticker.ticker.last);
 
-    const result = await client.trade(analysis.assetName, 'sell', price, amount);
+    await client.trade(analysis.assetName, 'sell', price, amount);
     
-    if (result.success === 1) {
-      await (prisma as any).analysis.update({
-        where: { id: analysisId },
-        data: { status: 'PROFIT' } // Marking as finished
-      });
-      revalidatePath('/');
-      return { success: true, message: "Panic Sell Executed!" };
-    } else {
-      return { success: false, message: result.error || "Sell failed" };
-    }
+    await (prisma as any).analysis.update({
+      where: { id: analysisId },
+      data: { status: 'PROFIT' } // Marking as finished
+    });
+    revalidatePath('/');
+    return { success: true, message: "Panic Sell Executed!" };
   } catch (e: any) {
     return { success: false, message: e.message };
   }
 }
 
 export async function emergencyExitAll() {
-  // Logic to sell all holdings with balance > 0
   try {
-    const client = new IndodaxClient();
+    const client = getClient();
     const info = await client.getInfo();
-    const balances = info.return.balance;
-    const summaries = await IndodaxClient.getAllTickers();
+    const balances = info.balance || {};
+    const summaries = await IndodaxPublicAPI.getAllTickers();
     
     const results = [];
     for (const coin of Object.keys(balances)) {
       if (coin === 'idr') continue;
-      const amount = parseFloat(balances[coin]);
+      const amount = parseFloat(balances[coin] as string);
       if (amount > 0) {
         const pair = `${coin}_idr`;
-        const price = parseFloat(summaries.tickers[pair]?.last || "0");
+        const ticker = summaries[pair];
+        const price = ticker ? parseFloat(ticker.last) : 0;
         if (price > 0) {
-          const res = await client.trade(pair, 'sell', price, amount);
-          results.push({ coin, success: res.success === 1 });
+          try {
+            await client.trade(pair, 'sell', price, amount);
+            results.push({ coin, success: true });
+          } catch (err) {
+            results.push({ coin, success: false });
+          }
         }
       }
     }

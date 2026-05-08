@@ -25,7 +25,7 @@ export class LiveRadar {
 
   public start() {
     if (this.activeStrategies.length === 0) {
-      console.warn('⚠️ Tidak ada strategy yang diregister ke Radar. Radar tidak diaktifkan.');
+      // console.warn('⚠️ Tidak ada strategy yang diregister ke Radar. Radar tidak diaktifkan.');
       return;
     }
 

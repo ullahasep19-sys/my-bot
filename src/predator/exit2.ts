@@ -1,7 +1,7 @@
 export interface ExitPlan {
-  tp1: number; // +7%
-  tp2: number; // +15%
-  tp3: number; // +25%
+  tp1: number; // +10%
+  tp2: number; // +20%
+  tp3: number; // +35%
   sl: number;  // -4% initial
 }
 
@@ -15,10 +15,10 @@ export interface PositionUpdate {
 export class ExitManager2 {
   public static calculateInitialPlan(entry: number): ExitPlan {
     return {
-      tp1: entry * 1.10,  // +10% (RR 2.5:1 vs SL 4%)
-      tp2: entry * 1.20,  // +20%
-      tp3: entry * 1.35,  // +35%
-      sl: entry * 0.96    // -4%
+      tp1: entry * 1.10,
+      tp2: entry * 1.20,
+      tp3: entry * 1.35,
+      sl: entry * 0.96 
     };
   }
 
@@ -27,15 +27,21 @@ export class ExitManager2 {
     entryPrice: number,
     currentSL: number,
     tpsHit: number[],
-    entryTimestamp?: number // unix ms, opsional untuk time-based exit
+    entryTimestamp?: number,
+    previousPrice?: number
   ): PositionUpdate {
     const profitPct = (currentPrice - entryPrice) / entryPrice;
     
-    // 0. Time-based exit: jika posisi stuck > 48 jam tanpa profit, keluar
+    // 0. Flash Crash Protection: Jika harga drop > 4% dalam satu siklus
+    if (previousPrice && currentPrice < previousPrice * 0.96) {
+      return { shouldClose: true, closeReason: 'FLASH_CRASH_DETECTION' };
+    }
+
+    // 0.1 Time-based exit: jika posisi stuck > 48 jam tanpa profit, keluar
     if (entryTimestamp) {
       const ageHours = (Date.now() - entryTimestamp) / 3600000;
       if (ageHours > 48 && profitPct < 0.01) {
-        return { shouldClose: true, closeReason: 'TIME_EXIT_48H' };
+        return { shouldClose: true, closeReason: 'TIME_EXIT_48H_STUCK' };
       }
     }
 
@@ -44,17 +50,24 @@ export class ExitManager2 {
       return { shouldClose: true, closeReason: 'STOP_LOSS' };
     }
 
-    // 2. BEP: profit +5% → geser SL ke entry + 0.5%
-    if (profitPct >= 0.05 && currentSL < entryPrice) {
-      return { shouldClose: false, newSL: entryPrice * 1.005, closeReason: 'MOVE_TO_BEP' };
+    // 2. BEP: profit +4% → geser SL ke entry + 0.3%
+    if (profitPct >= 0.04 && currentSL < entryPrice) {
+      return { shouldClose: false, newSL: entryPrice * 1.003, closeReason: 'MOVE_TO_BEP' };
     }
 
-    // 3. Trailing SL: profit +10% → SL ke +4%
-    if (profitPct >= 0.10 && currentSL < entryPrice * 1.04) {
-      return { shouldClose: false, newSL: entryPrice * 1.04, closeReason: 'TRAILING_STOP' };
+    // 3. Dynamic Trailing: 
+    // Jika sudah TP1 (+10%), SL mengikuti di -5% dari High (currentPrice)
+    if (tpsHit.includes(1)) {
+      const dynamicSL = currentPrice * 0.95; 
+      if (dynamicSL > currentSL) {
+        return { shouldClose: false, newSL: dynamicSL, closeReason: 'DYNAMIC_TRAILING' };
+      }
+    } else if (profitPct >= 0.07 && currentSL < entryPrice * 1.02) {
+      // Semi-Trailing sebelum TP1
+      return { shouldClose: false, newSL: entryPrice * 1.02, closeReason: 'PRE_TP1_TRAIL' };
     }
 
-    // 4. Tiered TP
+    // 4. Tiered TP Logic
     const plan = this.calculateInitialPlan(entryPrice);
     if (currentPrice >= plan.tp1 && !tpsHit.includes(1)) {
       return { shouldClose: false, tpHit: 1, closeReason: 'TP1_HIT' };

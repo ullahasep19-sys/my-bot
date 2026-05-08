@@ -48,12 +48,30 @@ interface OHLCBar {
 // ============================================================
 
 export class MarketIntelligence {
+  private static intelligenceCache = new Map<string, { data: any, timestamp: number }>();
+  private static readonly CACHE_TTL_MS = 120000; // 2 minutes cache
+
+  private static getCached<T>(key: string): T | null {
+    const cached = this.intelligenceCache.get(key);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
+      return cached.data as T;
+    }
+    return null;
+  }
+
+  private static setCache(key: string, data: any) {
+    this.intelligenceCache.set(key, { data, timestamp: Date.now() });
+  }
 
   // ============================================================
   // 1. MULTI-TIMEFRAME TREND ANALYSIS
   // Uses Indodax TradingView history endpoint
   // ============================================================
   public static async analyzeTrend(symbol: string): Promise<TrendAnalysis> {
+    const cacheKey = `trend_${symbol}`;
+    const cached = this.getCached<TrendAnalysis>(cacheKey);
+    if (cached) return cached;
+
     try {
       const symbolClean = symbol.replace('_idr', '').toUpperCase();
       const tvSymbol = `${symbolClean}IDR`; // Indodax TV uses BTCIDR format
@@ -63,11 +81,11 @@ export class MarketIntelligence {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       };
 
-      // Fetch 1H (last 48 bars), 4H (last 30 bars), Daily (last 30 bars)
+      // Fetch 1H (last 72 bars), 4H (last 60 bars), Daily (last 60 bars)
       const [h1Res, h4Res, dRes] = await Promise.allSettled([
-        this.fetchCandles(tvSymbol, '60',   now - 48 * 3600,       now, headers),
-        this.fetchCandles(tvSymbol, '240',  now - 30 * 4 * 3600,   now, headers),
-        this.fetchCandles(tvSymbol, 'D',    now - 30 * 86400,       now, headers),
+        this.fetchCandles(tvSymbol, '60',   now - 72 * 3600,       now, headers),
+        this.fetchCandles(tvSymbol, '240',  now - 60 * 4 * 3600,   now, headers),
+        this.fetchCandles(tvSymbol, 'D',    now - 60 * 86400,       now, headers),
       ]);
 
       const h1Bars    = h1Res.status === 'fulfilled'  ? h1Res.value  : [];
@@ -97,7 +115,7 @@ export class MarketIntelligence {
         trendScore = 18;
       } else if (sideCount === 3) {
         alignment = 'ACCUMULATION';
-        trendScore = 12;
+        trendScore = 18;
       } else if (bullCount >= 2 && trend1H === 'UP') {
         alignment = 'MOMENTUM';
         trendScore = 15;
@@ -136,7 +154,9 @@ export class MarketIntelligence {
       if (rsiRegime === 'OVERSOLD') trendScore += 5; // Accumulation
       if (rsiRegime === 'OVERBOUGHT') trendScore -= 15; // High FOMO risk
 
-      return { trend1H, trend4H, trendDaily, alignment, rsiRegime, trendScore };
+      const result = { trend1H, trend4H, trendDaily, alignment, rsiRegime, trendScore };
+      this.setCache(cacheKey, result);
+      return result;
     } catch {
       // API failure — return neutral
       return { trend1H: 'SIDEWAYS', trend4H: 'SIDEWAYS', trendDaily: 'SIDEWAYS', alignment: 'MIXED', rsiRegime: 'NEUTRAL', trendScore: 0 };
@@ -148,7 +168,7 @@ export class MarketIntelligence {
     const tvSymbol = symbolClean.includes('IDR') ? symbolClean : `${symbolClean}IDR`;
     
     const now = Math.floor(Date.now() / 1000);
-    const effectiveFrom = from || (now - 3600 * 24); // Default 24h back
+    const effectiveFrom = from || (now - 3600 * 48); // Default 48h back (more than before)
     const effectiveTo = to || now;
     const effectiveHeaders = headers || {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -163,11 +183,18 @@ export class MarketIntelligence {
           'Accept': 'application/json, text/plain, */*',
           'Referer': 'https://indodax.com/'
         },
-        timeout: 5000
+        timeout: 8000 // Increased timeout to 8s
       });
 
       const d = res.data;
-      if (!d || d.s !== 'ok' || !d.t) return [];
+      if (!d || d.s !== 'ok' || !d.t) {
+        // Fallback: If 4H fails, try to synthesize from 1H
+        if (resolution === '240') {
+           const h1Bars = await this.fetchCandles(symbol, '60', effectiveFrom, effectiveTo, headers);
+           if (h1Bars.length > 0) return this.synthesizeFromH1(h1Bars, 4);
+        }
+        return [];
+      }
 
       const bars: OHLCBar[] = d.t.map((t: number, i: number) => ({
         time:  t,
@@ -179,8 +206,29 @@ export class MarketIntelligence {
       }));
       return bars;
     } catch (e) {
+      if (resolution === '240') {
+        const h1Bars = await this.fetchCandles(symbol, '60', effectiveFrom, effectiveTo, headers);
+        if (h1Bars.length > 0) return this.synthesizeFromH1(h1Bars, 4);
+      }
       return [];
     }
+  }
+
+  private static synthesizeFromH1(h1Bars: OHLCBar[], factor: number): OHLCBar[] {
+    const bars: OHLCBar[] = [];
+    for (let i = 0; i < h1Bars.length; i += factor) {
+      const chunk = h1Bars.slice(i, i + factor);
+      if (chunk.length === 0) continue;
+      bars.push({
+        time: chunk[0].time,
+        open: chunk[0].open,
+        high: Math.max(...chunk.map(c => c.high)),
+        low: Math.min(...chunk.map(c => c.low)),
+        close: chunk[chunk.length - 1].close,
+        volume: chunk.reduce((sum, c) => sum + c.volume, 0)
+      });
+    }
+    return bars;
   }
 
   /**
@@ -262,6 +310,10 @@ export class MarketIntelligence {
     orderBlock: number;
     summary: string;
   }> {
+    const cacheKey = `smc_${pair}`;
+    const cached = this.getCached<any>(cacheKey);
+    if (cached) return cached;
+
     try {
       const h4Bars = await this.fetchCandles(pair, '240'); // 4H chart for institutional view
       if (h4Bars.length < 10) return this.neutralSMC();
@@ -311,7 +363,9 @@ export class MarketIntelligence {
       if (orderBlock > 0) summary += `[OB: ${orderBlock.toLocaleString()}]`;
       if (summary === ``) summary = "[Accumulation/Distribution inside range]";
 
-      return { bos, choch, liquiditySweep, orderBlock, summary: summary.trim() };
+      const result = { bos, choch, liquiditySweep, orderBlock, summary: summary.trim() };
+      this.setCache(cacheKey, result);
+      return result;
 
     } catch (e) {
       return this.neutralSMC();
@@ -326,6 +380,9 @@ export class MarketIntelligence {
   // 2. ORDERBOOK TRAP DETECTION
   // ============================================================
   public static async analyzeOrderbook(pair: string): Promise<OrderbookAnalysis> {
+    const cacheKey = `ob_${pair}`;
+    const cached = this.getCached<OrderbookAnalysis>(cacheKey);
+    if (cached) return cached;
     try {
       const data = await IndodaxPublicAPI.getDepth(pair);
       const buy = data.buy;
@@ -382,7 +439,9 @@ export class MarketIntelligence {
         hasSpoofWall   ? '🚨 Spoof Wall' : '',
       ].filter(Boolean).join(' | ');
 
-      return { bidWallStrength, askWallStrength, hasSpoofWall, whaleAbsorbing, isAbsorbing, deltaVolume, obScore, summary };
+      const result = { bidWallStrength, askWallStrength, hasSpoofWall, whaleAbsorbing, isAbsorbing, deltaVolume, obScore, summary };
+      this.setCache(cacheKey, result);
+      return result;
     } catch {
       return this.neutralOB();
     }
@@ -396,6 +455,10 @@ export class MarketIntelligence {
   // 3. ATR-BASED DYNAMIC TARGETS
   // ============================================================
   public static async calculateATRTargets(pair: string, entryPrice: number): Promise<ATRTarget> {
+    const cacheKey = `atr_${pair}`;
+    const cached = this.getCached<ATRTarget>(cacheKey);
+    if (cached) return cached;
+
     try {
       const symbolClean = pair.replace('_idr', '').toUpperCase();
       const tvSymbol = `${symbolClean}IDR`;
@@ -415,7 +478,9 @@ export class MarketIntelligence {
 
       // ATR = Wilder's ATR(14)
       const atr = this.calcATR(bars, 14);
-      return this.buildTargets(entryPrice, atr);
+      const result = this.buildTargets(entryPrice, atr);
+      this.setCache(cacheKey, result);
+      return result;
     } catch {
       const atr = entryPrice * 0.03;
       return this.buildTargets(entryPrice, atr);

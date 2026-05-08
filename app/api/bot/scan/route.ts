@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { prisma } from "@/src/db/prisma";
 import { TradingEngine } from "@bot/engine/TradingEngine";
 import { IndodaxPublicAPI } from "@bot/core/IndodaxPublicAPI";
 import { AlphaHunter } from "@bot/scanner/AlphaHunter";
@@ -56,7 +56,7 @@ async function executeScan() {
     const sentinel = new AISentinel(engine, dynamicPairs);
 
     const info = await engine.client.getInfo();
-    const summaries = await IndodaxPublicAPI.getAllTickers();
+    const summaries: any = await IndodaxPublicAPI.getAllTickers();
 
     let totalCapital = parseFloat(info.balance.idr) + parseFloat(info.balance_hold.idr || "0");
     const balances = info.balance;

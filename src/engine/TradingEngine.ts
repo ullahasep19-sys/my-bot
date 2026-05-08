@@ -26,7 +26,8 @@ export interface TradeState {
     tp1?: number,
     tp2?: number,
     tp3?: number,
-    tpHits?: number[]
+    tpHits?: number[],
+    lastPrice?: number
   }>;
   totalExposureIdr: number;
   // Execution Tracking & Performance Metrics
@@ -268,38 +269,52 @@ export class TradingEngine {
         console.log(`[DRY RUN] Order generated: BUY ${pair} | Price: ${executionPrice}`);
       } else {
         const safeAmountIdr = Math.floor(amountIdr);
+        const coin = pair.split('_')[0];
+        
+        // Simpan saldo awal untuk hitung akurasi amountCrypto
+        const initialInfo = await this.client.getInfo();
+        const initialCoinBalance = parseFloat(initialInfo.balance?.[coin] || "0");
+        
         let tradeResult: any;
         
-        // ===== ICEBERG ORDERS =====
-        if (safeAmountIdr >= 200000) {
-           console.log(`🧊 [ICEBERG] Memecah order besar Rp ${safeAmountIdr.toLocaleString()} menjadi 3 batch...`);
-           const batchSize = Math.floor(safeAmountIdr / 3);
-           for (let i = 0; i < 3; i++) {
-             const amt = (i === 2) ? (safeAmountIdr - (batchSize * 2)) : batchSize;
-             tradeResult = await this.client.trade(pair, 'buy', executionPrice, amt);
-             if (i < 2) await new Promise(r => setTimeout(r, 4000));
+        // ===== OPTIMIZED DYNAMIC ICEBERG =====
+        // Pecah order jika > 300rb atau jika coin adalah Low-Cap (liquidity tipis)
+        const isLowCap = !['btc_idr', 'eth_idr', 'sol_idr', 'bnb_idr', 'usdt_idr'].includes(pair);
+        const maxBatchSize = isLowCap ? 100000 : 300000;
+        
+        if (safeAmountIdr > maxBatchSize) {
+           const numBatches = Math.ceil(safeAmountIdr / maxBatchSize);
+           console.log(`🧊 [DYNAMIC ICEBERG] Memecah Rp ${safeAmountIdr.toLocaleString()} menjadi ${numBatches} batch...`);
+           const batchAmount = Math.floor(safeAmountIdr / numBatches);
+           
+           for (let i = 0; i < numBatches; i++) {
+             const amt = (i === numBatches - 1) ? (safeAmountIdr - (batchAmount * (numBatches - 1))) : batchAmount;
+             console.log(`   🔸 Batch ${i+1}/${numBatches}: Rp ${amt.toLocaleString()}`);
+             await this.client.trade(pair, 'buy', executionPrice, amt).catch(err => console.error(`      ❌ Batch ${i+1} failed: ${err.message}`));
+             // Jeda antar batch untuk biarkan market menyerap liquidity
+             if (i < numBatches - 1) await new Promise(r => setTimeout(r, 3000));
            }
         } else {
            tradeResult = await this.client.trade(pair, 'buy', executionPrice, safeAmountIdr);
         }
 
-        // ===== PARTIAL FILL VERIFICATION =====
-        // Wait a moment for order to settle then check actual balance increase
-        await new Promise(r => setTimeout(r, 2000));
+        // ===== ACCURATE FILL VERIFICATION =====
+        await new Promise(r => setTimeout(r, 3000)); // Beri waktu order match
         const finalInfo = await this.client.getInfo();
-        const coin = pair.split('_')[0];
-        const actualCryptoAmount = parseFloat(finalInfo.balance?.[coin] || "0");
+        const finalCoinBalance = parseFloat(finalInfo.balance?.[coin] || "0");
+        const purchasedCrypto = finalCoinBalance - initialCoinBalance;
         
-        if (actualCryptoAmount <= 0 && !this.isDryRun) {
-          console.log(`⚠️ [ORDER MANAGER] Order Rp ${safeAmountIdr.toLocaleString()} terkirim tapi saldo koin tetap 0. Kemungkinan Limit Order belum terisi.`);
-          // We still create the position but with 0 amountCrypto for now? 
-          // No, better to use the estimated if we can't find balance, but log warning.
+        // Jika purchasingCrypto <= 0, berarti order masih mengantri di orderbook
+        const finalCrypto = purchasedCrypto > 0 ? purchasedCrypto : (amountIdr / executionPrice);
+        
+        if (purchasedCrypto <= 0) {
+          console.log(`⏳ [ORDER PENDING] ${pair.toUpperCase()} Order Rp ${safeAmountIdr.toLocaleString()} masuk antrean (Limit).`);
+        } else {
+          console.log(`✅ [ORDER FILLED] ${pair.toUpperCase()} Berhasil mendapatkan ${purchasedCrypto.toFixed(8)} koin.`);
         }
 
-        Notifier.sendTelegram(`🟢 *TRADE BUY*\nPair: ${pair.toUpperCase()}\nPrice: Rp ${executionPrice.toLocaleString()}\nType: ${orderTypeLabel}\nStatus: ${actualCryptoAmount > 0 ? 'Filled' : 'Queued/Partial'}`);
+        Notifier.sendTelegram(`🟢 *TRADE BUY*\nPair: ${pair.toUpperCase()}\nPrice: Rp ${executionPrice.toLocaleString()}\nType: ${orderTypeLabel}\nFill: ${purchasedCrypto > 0 ? 'Success' : 'Pending/Limit'}`);
         
-        // Update State & Logs
-        const finalCrypto = actualCryptoAmount > 0 ? actualCryptoAmount : (amountIdr / executionPrice);
         this.state.openPositions[pair] = { 
           amountIdr, 
           amountCrypto: finalCrypto, 
@@ -421,10 +436,12 @@ export class TradingEngine {
         const amountIdr = this.state.openPositions[pair].amountIdr;
         const grossPnl = (actualPrice - entryPrice) * amountCrypto;
         
-        const INDODAX_FEE_PERCENT = 0.0062;
-        const totalFeeIdr = amountIdr * INDODAX_FEE_PERCENT;
-        const pnl = grossPnl - totalFeeIdr;
-        const pnlPercent = entryPrice > 0 ? ((actualPrice - entryPrice) / entryPrice) * 100 : 0;
+        const TAKER_FEE = 0.003; // 0.3% per side
+        const buyFee = amountIdr * TAKER_FEE;
+        const sellValue = amountCrypto * actualPrice;
+        const sellFee = sellValue * TAKER_FEE;
+        const pnl = grossPnl - buyFee - sellFee;
+        const pnlPercent = amountIdr > 0 ? (pnl / amountIdr) * 100 : 0;
         
         this.state.totalTrades += 1;
         this.state.totalPnL += pnl;
