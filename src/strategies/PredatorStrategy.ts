@@ -68,33 +68,42 @@ export class PredatorStrategy {
     // smcScore max = 80 (20+15+25+10+10), bukan 100
     const SMC_MAX = 80;
     let confidenceScore = 0;
-    confidenceScore += (consensus.finalScore / 100) * 25;
-    confidenceScore += (Math.min(smc.smcScore, SMC_MAX) / SMC_MAX) * 15;
-    confidenceScore += (narrativeScore / 100) * 15;
-    confidenceScore += (sniper.confidence / 100) * 15;
-    confidenceScore += (whale.isWhaleActive ? 15 : 0);
-    confidenceScore += Math.min(memeBoost, 10);
-    confidenceScore += (alphaHunterScore / 100) * 20;
-    // Microstructure: delta volume dan absorption
-    if (ob.deltaVolume > 0) confidenceScore += 5;   // lebih banyak buyer
-    if (ob.isAbsorbing) confidenceScore -= 8;        // seller besar absorb buying
+    confidenceScore += (consensus.finalScore / 100) * 25;   // AI Consensus: Increased to 25% (was 10%)
+    confidenceScore += (Math.min(smc.smcScore, SMC_MAX) / SMC_MAX) * 10; // SMC: Reduced to 10% (was 25%)
+    confidenceScore += (narrativeScore / 100) * 10;         // Narrative: 10%
+    confidenceScore += (sniper.confidence / 100) * 10;      // Sniper: 10%
+    confidenceScore += (whale.isWhaleActive ? 15 : 0);      // Whale: 15%
+    confidenceScore += Math.min(memeBoost, 5);              // Meme Boost: 5%
+    confidenceScore += (alphaHunterScore / 100) * 25;       // AlphaHunter: 25%
+    confidenceScore += (ob.obScore / 20) * 10;              // OB Score: 10%
+    
+    // BONUS: Jika koin ini adalah kandidat utama AlphaHunter, beri booster +10
+    if (alphaHunterScore > 60) confidenceScore += 10;
 
     let finalScore = Math.min(100, confidenceScore);
-    // Regime bias: hanya ±3 agar tidak mendistorsi terlalu jauh
-    if (regime === MarketRegime.WAR) finalScore = Math.min(100, finalScore + 3);
-    if (regime === MarketRegime.DEFENSE) finalScore = Math.max(0, finalScore - 3);
+    // Regime bias: Lebih berani di kondisi apapun
+    if (regime === MarketRegime.WAR) finalScore = Math.min(100, finalScore + 5);
+    // Agresif di DEFENSE (was +2)
+    if (regime === MarketRegime.DEFENSE) finalScore = Math.min(100, finalScore + 5); 
 
     // 8. TIERED EXECUTION ENGINE (Phase 5.2)
     const entryPrice = sniper.entryPrice || aiResults[0]?.precise_entry || 0;
-    const plan = ExitManager2.calculateInitialPlan(entryPrice);
+    // Jika entry dari AI/sniper tidak valid, fetch harga live
+    let resolvedEntry = entryPrice;
+    if (!resolvedEntry || resolvedEntry <= 0) {
+      try {
+        const { IndodaxPublicAPI } = require('../core/IndodaxPublicAPI');
+        const ticker = await IndodaxPublicAPI.getTicker(pair);
+        resolvedEntry = parseFloat(ticker.ticker.last);
+      } catch { resolvedEntry = 0; }
+    }
+    const plan = ExitManager2.calculateInitialPlan(resolvedEntry);
 
-    // Threshold disesuaikan per regime
-    const isMemeManiaPhase = narrativeScore >= 70;
-    const marketBuyThreshold = regime === MarketRegime.PREDATOR ? 75 : 68;
-    const limitEntryThreshold = isMemeManiaPhase ? 50 :   // naik dari 42
-                                regime === MarketRegime.PREDATOR ? 68 :
-                                regime === MarketRegime.WAR ? 55 : 60; // naik dari 50/55
-    const scoutEntryThreshold = 45; // naik dari 38
+    // Threshold disesuaikan per regime (DIREVISI: Ultra Agresif)
+    const isMemeManiaPhase = narrativeScore >= 75;
+    const marketBuyThreshold = 65;   // Very Aggressive (was 70)
+    const limitEntryThreshold = 55;  // Standard (was 60)
+    const scoutEntryThreshold = 45;  // Minimum (was 50)
 
     if (finalScore >= marketBuyThreshold) {
       return {
@@ -130,17 +139,19 @@ export class PredatorStrategy {
       };
     }
 
-    return { 
-      shouldBuy: false, 
-      action: 'SNIPER_WATCHLIST',
-      reason: `👀 WATCH: Score ${finalScore.toFixed(0)} | ${smc.summary}`, 
-      score: finalScore 
-    };
+    if (finalScore >= 30) { // Aggressive Watchlist (was 40)
+      return { 
+        shouldBuy: false, 
+        action: 'SNIPER_WATCHLIST',
+        reason: `👀 WATCH: Score ${finalScore.toFixed(0)} | ${smc.summary}`, 
+        score: finalScore 
+      };
+    }
 
     return { 
       shouldBuy: false, 
       action: 'SKIP',
-      reason: `Score ${finalScore.toFixed(0)} < 60 (Weak Alpha)`, 
+      reason: `Score ${finalScore.toFixed(0)} < 30 (Weak Alpha)`, 
       score: finalScore 
     };
   }

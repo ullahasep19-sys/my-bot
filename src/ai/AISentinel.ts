@@ -133,8 +133,10 @@ export class AISentinel {
 
   public async analyzeMarket(): Promise<AIResult[]> {
     const { regime } = await MacroRegimeEngine.getCurrentRegime();
-    // Batasi ke top 5 pair per siklus untuk hindari rate limit
-    const pairsToAnalyze = this.targetPairs.slice(0, 5);
+    // Batasi ke top 10 pair per siklus (was 5)
+    // DEFENSE: 5 pair (selektif), WAR: 7 pair, PREDATOR: 10 pair
+    const maxPairs = regime === 'DEFENSE' ? 5 : regime === 'PREDATOR' ? 10 : 7;
+    const pairsToAnalyze = this.targetPairs.slice(0, maxPairs);
     console.log(`\n🦅 [PREDATOR MODE] ON | Regime: ${regime} | Target Count: ${pairsToAnalyze.length}`);
     
     const results: AIResult[] = [];
@@ -289,7 +291,8 @@ export class AISentinel {
     console.log(`│  CONFIDENCE  : ${res.confidence.padEnd(35)} │`);
     console.log(`│  SCORE       : ${score.toString().padEnd(35)} │`);
     
-    if (action === 'BUY' && score >= 42) {
+    // Threshold ditingkatkan ke 60 sesuai hasil audit market realism
+    if (action === 'BUY' && score >= 60) {
       console.log(`│  STATUS : 🟢 HIGH CONVICTION BUY                     │`);
       const totalCapital = await this.engine.calculateTotalEquity();
       const MIDCAP_PAIRS = ['btc_idr','eth_idr','sol_idr','bnb_idr','xrp_idr','ada_idr',
@@ -332,23 +335,23 @@ export class AISentinel {
   }
 
   private buildPrompt(data: string, isHeld: boolean, pair: string): string {
-    const isMemeOrAI = pair.includes('doge') || pair.includes('pepe') || pair.includes('fet') || pair.includes('pippin') || pair.includes('fartcoin') || pair.includes('zerebro');
-    const booster = isMemeOrAI ? "Koin ini berada dalam narasi panas (Meme/AI). Cari alasan untuk BUY jika setup teknikal mendukung (Bullish/Lean Bullish/Mixed)." : "";
-
     return `
-      Kamu adalah Alpha Hunter AI, spesialis Quant Trading.
-      Tugas: Berikan analisa trading presisi untuk ${pair.toUpperCase()}.
+      Kamu adalah Alpha Hunter AI, spesialis Quant Trading & Risk Auditor.
+      Tugas: Berikan analisa trading OBJEKTIF dan KRITIS untuk ${pair.toUpperCase()}.
       
       DATA PASAR:
       ${data}
       
-      ${booster}
+      PEDOMAN ANALISA:
+      - Abaikan hype jika teknikal (Trend/RSI/OB) tidak mendukung.
+      - Berikan skor rendah jika terjadi ketidakselarasan trend (Mixed).
+      - Utamakan preservasi modal di atas potensi profit.
       
-      ATURAN SKORING:
-      - 80-100: Setup Elite (High Probability).
-      - 60-79: Setup Valid (Good R:R).
-      - 40-59: Konsolidasi/Wait.
-      - 0-39: Bearish/Berisiko.
+      ATURAN SKORING (Ketat):
+      - 85-100: SETUP ELITE (Hanya jika Trend UP + OB Bullish + RSI Support).
+      - 70-84: SETUP VALID (Trend UP/Breakout dengan volume kuat).
+      - 50-69: KONSOLIDASI (Wait & See, jangan buy).
+      - 0-49: BEARISH / HIGH RISK (Hindari total).
       
       RESPON DALAM JSON SAJA:
       {
@@ -359,7 +362,7 @@ export class AISentinel {
         "precise_entry": number,
         "precise_sl": number,
         "precise_tp": number,
-        "why_now": "alasan singkat 1 kalimat"
+        "why_now": "alasan kritis 1 kalimat"
       }
     `.trim();
   }
